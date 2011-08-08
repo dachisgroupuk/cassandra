@@ -341,6 +341,10 @@ class Cassandra
       @schema[cf.name.to_s]["column_type"] = cf.column_type || "Standard"
     end
 
+    def drop_column_family(cf)
+      @schema.delete(cf.to_s)
+    end
+
 
     private
 
@@ -354,7 +358,7 @@ class Cassandra
       finish = to_compare_with_type(finish, column_family)
       cf(column_family).keys.sort.each do |key|
         break if ret.keys.size >= key_count
-        if (start_key.nil? || key >= start_key) && (finish_key.nil? || key <= finish_key)
+        if (start_key.nil? || start_key.empty? || key >= start_key) && (finish_key.nil? || finish_key.empty? || key <= finish_key)
           if columns
             #ret[key] = columns.inject(OrderedHash.new){|hash, column_name| hash[column_name] = cf(column_family)[key][column_name]; hash;}
             ret[key] = columns_to_hash(column_family, cf(column_family)[key].select{|k,v| columns.include?(k)})
