@@ -332,6 +332,7 @@ class Cassandra
     end
 
     def column_family_property(column_family, key)
+      return nil unless schema.has_key?(column_family.to_s)
       schema[column_family.to_s][key]
     end
 
