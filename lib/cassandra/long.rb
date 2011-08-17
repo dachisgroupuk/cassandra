@@ -9,7 +9,7 @@ class Cassandra
       when self.class # Long
         @bytes = bytes.to_s
       when String
-        case bytes.size
+        case bytes.bytesize
         when 8 # Raw byte array
           @bytes = bytes
         when 18 # Human-readable UUID-like representation; inverse of #to_guid
