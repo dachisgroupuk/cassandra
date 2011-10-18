@@ -60,8 +60,8 @@ class Cassandra
   }
 
   THRIFT_DEFAULTS = {
-    :transport_wrapper => Thrift::BufferedTransport,
-    :thrift_client_class => ThriftClient
+    :transport_wrapper    => Thrift::FramedTransport,
+    :thrift_client_class  => ThriftClient
   }
 
   attr_reader :keyspace, :servers, :schema, :thrift_client_options, :thrift_client_class, :auth_request
@@ -152,6 +152,15 @@ class Cassandra
     return false if Cassandra.VERSION.to_f < 0.7
 
     client.describe_keyspaces.to_a.collect {|ksdef| ksdef.name }
+  end
+
+  ##
+  # Return a hash of column_family definitions indexed by their
+  # names
+  def column_families
+    return false if Cassandra.VERSION.to_f < 0.7
+
+    schema.cf_defs.inject(Hash.new){|memo, cf_def| memo[cf_def.name] = cf_def; memo;}
   end
 
   ##
@@ -290,7 +299,7 @@ class Cassandra
   # * new_name - The desired column_family name.
   #
   def rename_column_family(old_name, new_name)
-    return false if Cassandra.VERSION.to_f < 0.7
+    return false if Cassandra.VERSION.to_f != 0.7
 
     begin
       res = client.system_rename_column_family(old_name, new_name)
@@ -453,7 +462,9 @@ class Cassandra
 
   ##
   # This method is used to delete (actually marking them as deleted with a
-  # tombstone) columns or super columns.
+  # tombstone)  rows, columns, or super columns depending on the parameters 
+  # passed.  If only a key is passed the entire row will be marked as deleted.
+  # If a column name is passed in that column will be deleted.
   #
   # This method can also be used in batch mode. If in batch mode then we
   # queue up the mutations (a deletion in this case)
@@ -497,12 +508,15 @@ class Cassandra
   # * columns - Either a single super_column or a list of columns.
   # * sub_columns - The list of sub_columns to select.
   # * options - Valid options are:
+  #   * :start - The column name to start from.
+  #   * :stop - The column name to stop at.
+  #   * :count - The maximum count of columns to return. (By default cassandra will count up to 100 columns)
   #   * :consistency - Uses the default read consistency if none specified.
   #
   def count_columns(column_family, key, *columns_and_options)
     column_family, super_column, _, options = 
       extract_and_validate_params(column_family, key, columns_and_options, READ_DEFAULTS)      
-    _count_columns(column_family, key, super_column, options[:consistency], options[:count])
+    _count_columns(column_family, key, super_column, options[:start], options[:stop], options[:count], options[:consistency])
   end
 
   ##
@@ -587,16 +601,16 @@ class Cassandra
   #
   # Supports the same parameters as Cassandra#get.
   #
-  # * column_family - The column_family that you are inserting into.
-  # * key - An array of keys to.
-  # * columns - Either a single super_column or a list of columns.
-  # * sub_columns - The list of sub_columns to select.
-  # * options - Valid options are:
-  #   * :count    - The number of columns requested to be returned.
-  #   * :start    - The starting value for selecting a range of columns.
-  #   * :finish   - The final value for selecting a range of columns.
-  #   * :reversed - If set to true the results will be returned in reverse order.
-  #   * :consistency - Uses the default read consistency if none specified.
+  # * column_family   - The column_family that you are inserting into.
+  # * keys            - An array of keys to select.
+  # * columns         - Either a single super_column or a list of columns.
+  # * sub_columns     - The list of sub_columns to select.
+  # * options         - Valid options are:
+  #   * :count        - The number of columns requested to be returned.
+  #   * :start        - The starting value for selecting a range of columns.
+  #   * :finish       - The final value for selecting a range of columns.
+  #   * :reversed     - If set to true the results will be returned in reverse order.
+  #   * :consistency  - Uses the default read consistency if none specified.
   #
   def multi_get(column_family, keys, *columns_and_options)
     column_family, column, sub_column, options = 
@@ -669,14 +683,12 @@ class Cassandra
   # reversal happens before selecting the range).
   #
   # * column_family - The column_family that you are inserting into.
-  # * key - The row key to insert.
-  # * columns - Either a single super_column or a list of columns.
-  # * sub_columns - The list of sub_columns to select.
   # * options - Valid options are:
   #   * :start_key    - The starting value for selecting a range of keys (only useful with OPP).
   #   * :finish_key   - The final value for selecting a range of keys (only useful with OPP).
   #   * :key_count    - The total number of keys to return from the query. (see note regarding deleted records)
   #   * :batch_size   - The maximum number of keys to return per query. If specified will loop until :key_count is obtained or all records have been returned.
+  #   * :columns 	    - A list of columns to return.
   #   * :count        - The number of columns requested to be returned.
   #   * :start        - The starting value for selecting a range of columns.
   #   * :finish       - The final value for selecting a range of columns.
@@ -729,19 +741,20 @@ class Cassandra
   # range of keys in the column_family you request.
   #
   # If a block is passed in we will yield the row key and columns for
-  # each record returned.
+  # each record returned and return a nil value instead of a Cassandra::OrderedHash.
   #
   # See Cassandra#get_range for more details.
   #
   def get_range_batch(column_family, options = {})
     batch_size    = options.delete(:batch_size) || 100
     count         = options.delete(:key_count)
-    result        = {}
+    result        = (!block_given? && {}) || nil
+    num_results    = 0
 
     options[:start_key] ||= ''
     last_key  = nil
 
-    while options[:start_key] != last_key && (count.nil? || count > result.length)
+    while options[:start_key] != last_key && (count.nil? || count > num_results)
       options[:start_key] = last_key
       res = get_range_single(column_family, options.merge!(:start_key => last_key,
                                                            :key_count => batch_size,
@@ -749,11 +762,15 @@ class Cassandra
                                                           ))
       res.each do |key, columns|
         next if options[:start_key] == key
-        next if result.length == count
+        next if num_results == count
 
         unless columns == {}
-          yield key, columns if block_given?
-          result[key] = columns
+          if block_given?
+            yield key, columns
+          else
+            result[key] = columns
+          end
+          num_results += 1
         end
         last_key = key
       end

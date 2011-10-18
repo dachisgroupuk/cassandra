@@ -175,8 +175,10 @@ class Cassandra
       end
     end
 
-    def count_columns(column_family, key, column=nil)
-      get(column_family, key, column).keys.length
+    def count_columns(column_family, key, *columns_and_options)
+      column_family, columns, sub_columns, options = extract_and_validate_params_for_real(column_family, key, columns_and_options, READ_DEFAULTS)
+
+      get(column_family, key, columns, options).keys.length
     end
 
     def multi_get_columns(column_family, keys, columns)
@@ -194,15 +196,15 @@ class Cassandra
     end
 
     def get_range(column_family, options = {}, &blk)
-      column_family, _, _, options = extract_and_validate_params_for_real(column_family, "", [options], 
-                                                                          READ_DEFAULTS.merge(:start_key  => '',
-                                                                                              :finish_key    => '',
+      column_family, _, _, options = extract_and_validate_params_for_real(column_family, "", [options],
+                                                                          READ_DEFAULTS.merge(:start_key  => nil,
+                                                                                              :finish_key => nil,
                                                                                               :key_count  => 100,
                                                                                               :columns    => nil,
                                                                                               :reversed   => false
                                                                                              )
                                                                          )
-      _get_range(column_family,
+      res = _get_range(column_family,
                  options[:start_key],
                  options[:finish_key],
                  options[:key_count],
@@ -212,6 +214,12 @@ class Cassandra
                  options[:count],
                  options[:consistency],
                  options[:reversed], &blk)
+
+      if blk.nil?
+        res
+      else
+        nil
+      end
     end
 
     def get_range_keys(column_family, options = {})
@@ -252,7 +260,7 @@ class Cassandra
     def create_index(ks_name, cf_name, c_name, v_class)
       if @indexes[ks_name] &&
         @indexes[ks_name][cf_name] &&
-        @indexes[ks_name][cf_name][c_name] 
+        @indexes[ks_name][cf_name][c_name]
         nil
 
       else
@@ -265,7 +273,7 @@ class Cassandra
     def drop_index(ks_name, cf_name, c_name)
       if @indexes[ks_name] &&
         @indexes[ks_name][cf_name] &&
-        @indexes[ks_name][cf_name][c_name] 
+        @indexes[ks_name][cf_name][c_name]
 
         @indexes[ks_name][cf_name].delete(c_name)
       else
@@ -327,6 +335,21 @@ class Cassandra
       nil
     end
 
+    def column_families
+      cf_defs = {}
+      schema.each do |key, value|
+        cf_def = Cassandra::ColumnFamily.new
+
+        value.each do |property, property_value|
+          cf_def.send(:"#{property}=", property_value)
+        end
+
+        cf_defs[key] = cf_def
+      end
+
+      cf_defs
+    end
+
     def schema(load=true)
       @schema
     end
@@ -337,15 +360,24 @@ class Cassandra
     end
 
     def add_column_family(cf)
-      @schema[cf.name.to_s] ||= OrderedHash.new 
-      @schema[cf.name.to_s]["comparator_type"] = cf.comparator_type
-      @schema[cf.name.to_s]["column_type"] = cf.column_type || "Standard"
+      @schema[cf.name.to_s] ||= OrderedHash.new
+
+      cf.instance_variables.each do |var|
+        @schema[cf.name.to_s][var.slice(1..-1)] = cf.instance_variable_get(var)
+      end
     end
 
-    def drop_column_family(cf)
-      @schema.delete(cf.to_s)
+    def update_column_family(cf)
+      return false unless @schema.include?(cf.name.to_s)
+
+      cf.instance_variables.each do |var|
+        @schema[cf.name.to_s][var.slice(1..-1)] = cf.instance_variable_get(var)
+      end
     end
 
+    def drop_column_family(column_family_name)
+      @schema.delete(column_family_name)
+    end
 
     private
 

@@ -4,16 +4,16 @@ class CassandraTest < Test::Unit::TestCase
   include Cassandra::Constants
 
   def setup
-    @twitter = Cassandra.new('Twitter', "127.0.0.1:9160", :retries => 2, :connect_timeout => 1, :exception_classes => [])
+    @twitter = Cassandra.new('Twitter', "127.0.0.1:9160", :retries => 2, :connect_timeout => 0.1, :exception_classes => [])
     @twitter.clear_keyspace!
 
-    @blogs = Cassandra.new('Multiblog', "127.0.0.1:9160", :retries => 2, :connect_timeout => 1, :exception_classes => [])
+    @blogs = Cassandra.new('Multiblog', "127.0.0.1:9160", :retries => 2, :connect_timeout => 0.1, :exception_classes => [])
     @blogs.clear_keyspace!
 
-    @blogs_long = Cassandra.new('MultiblogLong', "127.0.0.1:9160", :retries => 2, :connect_timeout => 1, :exception_classes => [])
+    @blogs_long = Cassandra.new('MultiblogLong', "127.0.0.1:9160", :retries => 2, :connect_timeout => 0.1, :exception_classes => [])
     @blogs_long.clear_keyspace!
 
-    @type_conversions = Cassandra.new('TypeConversions', "127.0.0.1:9160", :retries => 2, :connect_timeout => 1, :exception_classes => [])
+    @type_conversions = Cassandra.new('TypeConversions', "127.0.0.1:9160", :retries => 2, :connect_timeout => 0.1, :exception_classes => [])
     @type_conversions.clear_keyspace!
 
     Cassandra::WRITE_DEFAULTS[:consistency] = Cassandra::Consistency::ONE
@@ -259,6 +259,25 @@ class CassandraTest < Test::Unit::TestCase
     assert_equal(4, @twitter.get_range_keys(:Statuses, :key_count => 4).size)
   end
 
+  def test_get_range_with_count
+    @twitter.insert(:Statuses, key + '1', {'test_column1' => '1', 'test_column2' => '2', 'test_column3' => '2', 'deleted_column' => '1'})
+    @twitter.insert(:Statuses, key + '2', {'test_column4' => '3', 'test_column5' => '4', 'test_column6' => '2', 'deleted_column' => '2'})
+
+    @twitter.get_range(:Statuses, :count => 3) do |key, columns|
+      assert_equal columns.count, 3
+    end
+
+    assert_equal 2, @twitter.get_range(:Statuses, :start_key => key + '1', :finish_key => key + '1', :count => 2)[key + '1'].count
+
+    @twitter.remove(:Statuses, key + '1', 'deleted_column')
+    @twitter.remove(:Statuses, key + '2', 'deleted_column')
+
+    @twitter.get_range(:Statuses, :count => 2) do |key, columns|
+      assert_equal columns.count, 2
+    end
+
+  end
+
   def test_get_range_block
     k = key
     5.times do |i|
@@ -267,13 +286,27 @@ class CassandraTest < Test::Unit::TestCase
 
     values = (0..4).collect{|n| { :key => "test_get_range_block#{n}", :columns => { "body-#{n}" => "v" }} }.reverse
 
-    @twitter.get_range(:Statuses, :start_key => k.to_s, :key_count => 5) { |key,columns|
+    returned_value = @twitter.get_range(:Statuses, :start_key => k.to_s, :key_count => 5) do |key,columns|
        expected = values.pop
        assert_equal expected[:key], key
        assert_equal expected[:columns], columns
-    }
-    assert_equal [],values
+    end
 
+    assert_equal [], values
+    assert_nil returned_value
+  end
+  
+  def test_get_range_reversed
+    data = 3.times.map { |i| ["body-#{i.to_s}", "v"] }
+    hash = Cassandra::OrderedHash[data]
+    reversed_hash = Cassandra::OrderedHash[data.reverse]
+    
+    @twitter.insert(:Statuses, "all-keys", hash)
+    
+    columns = @twitter.get_range(:Statuses, :reversed => true)["all-keys"]
+    columns.each do |column|
+      assert_equal reversed_hash.shift, column
+    end
   end
   
   def test_get_range_reversed
@@ -335,7 +368,7 @@ class CassandraTest < Test::Unit::TestCase
 
     keys_yielded = []
     @twitter.each(:Statuses, :columns => ['single_column_lookup'], :batch_size => 5) do |key, columns|
-      assert_equal key_columns[key].reject {|k,v| k != 'single_column_lookup'}, columns
+      assert_equal key_columns[key].reject {|k2,v| k2 != 'single_column_lookup'}, columns
       keys_yielded << key
     end
 
@@ -469,8 +502,13 @@ class CassandraTest < Test::Unit::TestCase
   end
 
   def test_count_columns
-    @twitter.insert(:Statuses, key, {'body' => 'v1', 'user' => 'v2'})
-    assert_equal 2, @twitter.count_columns(:Statuses, key)
+    columns = (1..200).inject(Hash.new){|h,v| h['column' + v.to_s] = v.to_s; h;}
+    
+    @twitter.insert(:Statuses, key, columns)
+    assert_equal 200, @twitter.count_columns(:Statuses, key, :count => 200)
+    assert_equal 100, @twitter.count_columns(:Statuses, key)    
+    assert_equal 55, @twitter.count_columns(:Statuses, key, :count => 55)
+    
   end
 
   def test_count_super_columns
@@ -523,7 +561,7 @@ class CassandraTest < Test::Unit::TestCase
       @twitter.remove(:Users, k + '1') # Full row 
       assert_equal({'body' => 'v1', 'user' => 'v1'}, @twitter.get(:Users, k + '1')) # Not yet removed
 
-      @twitter.remove(:Users, k +'0', 'delete_me') # A single column of the row
+      @twitter.remove(:Users, k + '0', 'delete_me') # A single column of the row
       assert_equal({'delete_me' => 'v0', 'keep_me' => 'v0'}, @twitter.get(:Users, k + '0')) # Not yet removed
       
       @twitter.remove(:Users, k + '4')
@@ -555,7 +593,7 @@ class CassandraTest < Test::Unit::TestCase
     assert_equal({'body' => 'v'}.keys.sort, @twitter.get(:Statuses, k + '3').timestamps.keys.sort) # Written
 
     # Final result: initial_subcolumns - initial_subcolumns.first + new_subcolumns
-    resulting_subcolumns = initial_subcolumns.merge(new_subcolumns).reject{|k,v| k == subcolumn_to_delete }
+    resulting_subcolumns = initial_subcolumns.merge(new_subcolumns).reject{|k2,v| k2 == subcolumn_to_delete }
     assert_equal(resulting_subcolumns, @twitter.get(:StatusRelationships, key, 'user_timelines'))
     assert_equal({}, @twitter.get(:StatusRelationships, key, 'dummy_supercolumn')) # dummy supercolumn deleted 
 
@@ -733,6 +771,41 @@ class CassandraTest < Test::Unit::TestCase
                     ]
       idx_clause = @twitter.create_idx_clause(idx_expr)
       assert_equal(5, @twitter.get_indexed_slices(:Statuses, idx_clause).length)
+    end
+
+    def test_column_family_mutation
+      k = key
+
+      if @twitter.column_families.include?(k)
+        @twitter.drop_column_family(k)
+      end
+
+      # Verify add_column_family works as desired.
+      @twitter.add_column_family(
+        Cassandra::ColumnFamily.new(
+          :keyspace => 'Twitter',
+          :name     => k
+        )
+      )
+      assert @twitter.column_families.include?(k)
+
+      if CASSANDRA_VERSION.to_f == 0.7
+        # Verify rename_column_family works properly
+        @twitter.rename_column_family(k, k + '_renamed')
+        assert @twitter.column_families.include?(k + '_renamed')
+
+        # Change it back and validate
+        @twitter.rename_column_family(k + '_renamed', k)
+        assert @twitter.column_families.include?(k)
+      end
+
+      temp_cf_def = @twitter.column_families[k]
+      temp_cf_def.comment = k
+      @twitter.update_column_family(temp_cf_def)
+      assert @twitter.column_families.include?(k)
+
+      @twitter.drop_column_family(k)
+      assert !@twitter.column_families.include?(k)
     end
   end
 

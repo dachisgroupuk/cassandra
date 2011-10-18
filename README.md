@@ -1,7 +1,7 @@
-# cassandra 
+# cassandra
 A Ruby client for the Cassandra distributed database.
 
-Supports 1.8.7, 1.9.2, and rubinius on Cassandra 0.6.13, 0.7.8, 0.8.2.
+Supports 1.8.7, 1.9.2, and rubinius on Cassandra 0.6.13, 0.7.9, 0.8.6, 1.0.0-rc2.
 
 ## Getting Started
 
@@ -31,10 +31,10 @@ To use the default version simply use a normal require:
 
     require 'cassandra'
 
-To use a specific version (0.7 in this example) you would use a 
+To use a specific version (1.0 in this example) you would use a
 slightly differently formatted require:
 
-    require 'cassandra/0.7'
+    require 'cassandra/1.0'
 
 #### Environment Variable Method
 These mechanisms work well when you are using the cassandra gem in your
@@ -42,13 +42,13 @@ own projects or irb, but if you would rather not hard code your app to a
 specific version you can always specify an environment variable with the
 version you are using:
 
-    export CASSANDRA_VERSION=0.7
+    export CASSANDRA_VERSION=0.8
 
 Then you would use the default require as listed above:
 
     require 'cassandra'
 
-## Read/Write API Method Reference 
+## Read/Write API Method Reference
 
 ### insert
 
@@ -79,16 +79,18 @@ Example:
 
 ### remove
 
-* column\_family - The column\_family that you are inserting into.
-* key - The row key to insert.
-* columns - Either a single super_column or a list of columns.
-* sub_columns - The list of sub\_columns to select.
+* column\_family - The column\_family that you are working with.
+* key - The row key to remove (or remove columns from).
+* columns - Either a single super_column or a list of columns to remove.
+* sub_columns - The list of sub\_columns to remove.
 * options - Valid options are:
   * :timestamp - Uses the current time if none specified.
   * :consistency - Uses the default write consistency if none specified.
 
 This method is used to delete (actually marking them as deleted with a
-tombstone) columns or super columns.
+tombstone) rows, columns, or super columns depending on the parameters
+passed.  If only a key is passed the entire row will be marked as deleted.
+If a column name is passed in that column will be deleted.
 
 Example:
 
@@ -101,11 +103,14 @@ Example:
 
 Count the columns for the provided parameters.
 
-* column\_family - The column\_family that you are inserting into.
-* key - The row key to insert.
+* column\_family - The column\_family that you are working with.
+* key - The row key.
 * columns - Either a single super_column or a list of columns.
 * sub_columns - The list of sub\_columns to select.
 * options - Valid options are:
+  * :start - The column name to start from.
+  * :stop - The column name to stop at.
+  * :count - The maximum count of columns to return. (By default cassandra will count up to 100 columns)
   * :consistency - Uses the default read consistency if none specified.
 
 Example:
@@ -117,10 +122,10 @@ Example:
 
 Return a hash (actually, a Cassandra::OrderedHash) or a single value
 representing the element at the column_family:key:[column]:[sub_column]
-path you request. 
+path you request.
 
-* column\_family - The column\_family that you are inserting into.
-* key - The row key to insert.
+* column\_family - The column\_family that you are working with.
+* key - The row key to select.
 * columns - Either a single super\_column or a list of columns.
 * sub\_columns - The list of sub\_columns to select.
 * options - Valid options are:
@@ -146,8 +151,8 @@ returned.
 
 Supports the same parameters as Cassandra#get.
 
-* column_family - The column_family that you are inserting into.
-* key - An array of keys to.
+* column_family - The column_family that you are working with.
+* key - An array of keys to select.
 * columns - Either a single super_column or a list of columns.
 * sub_columns - The list of sub\_columns to select.
 * options - Valid options are:
@@ -163,8 +168,8 @@ Example:
     @client.insert(:Users, '2', {'body' => 'v2', 'user' => 'v2'})
 
     expected = OrderedHash[
-                  '1', {'body' => 'v1', 'user' => 'v1'}, 
-                  '2', {'body' => 'v2', 'user' => 'v2'}, 
+                  '1', {'body' => 'v1', 'user' => 'v1'},
+                  '2', {'body' => 'v2', 'user' => 'v2'},
                   'bogus', {}
               ]
     result = @client.multi_get(:Users, ['1', '2', 'bogus'])
@@ -180,10 +185,10 @@ that specific column/super column.
 
 This method will return true or false.
 
-* column\_family - The column\_family that you are inserting into.
-* key - The row key to insert.
+* column\_family - The column\_family that you are working with.
+* key - The row key to check.
 * columns - Either a single super\_column or a list of columns.
-* sub\_columns - The list of sub\_columns to select.
+* sub\_columns - The list of sub\_columns to check.
 * options - Valid options are:
   * :consistency - Uses the default read consistency if none specified.
 
@@ -205,7 +210,7 @@ is passed in Cassandra#get\_range\_batch will be called. Otherwise
 Cassandra#get\_range\_single will be used.
 
 The start\_key and finish\_key parameters are only useful for iterating of all records
-as is done in the Cassandra#each and Cassandra#each\_key methods if you are using the 
+as is done in the Cassandra#each and Cassandra#each\_key methods if you are using the
 RandomPartitioner.
 
 If the table is partitioned with OrderPreservingPartitioner you may
@@ -216,20 +221,18 @@ If a block is passed in we will yield the row key and columns for
 each record returned.
 
 Please note that Cassandra returns a row for each row that has existed in the
-system since gc\_grace\_seconds. This is because deleted row keys are marked as 
+system since gc\_grace\_seconds. This is because deleted row keys are marked as
 deleted, but left in the system until the cluster has had resonable time to replicate the deletion.
 This function attempts to suppress deleted rows (actually any row returned without
 columns is suppressed).
 
-* column\_family - The column\_family that you are inserting into.
-* key - The row key to insert.
-* columns - Either a single super\_column or a list of columns.
-* sub\_columns - The list of sub\_columns to select.
+* column\_family - The column\_family that you are working with.
 * options - Valid options are:
   * :start\_key    - The starting value for selecting a range of keys (only useful with OPP).
   * :finish\_key   - The final value for selecting a range of keys (only useful with OPP).
   * :key\_count    - The total number of keys to return from the query. (see note regarding deleted records)
   * :batch\_size   - The maximum number of keys to return per query. If specified will loop until :key\_count is obtained or all records have been returned.
+  * :columns      - A list of columns to return.
   * :count        - The number of columns requested to be returned.
   * :start        - The starting value for selecting a range of columns.
   * :finish       - The final value for selecting a range of columns.
@@ -335,9 +338,9 @@ Example:
     # verify that GT and LT queries perform properly
     expressions   =  [
                       { :column_name => 'x',
-                        :value => [0,20].pack("NN"),  
+                        :value => [0,20].pack("NN"),
                         :comparison => "=="},
-                      { :column_name => 'non_indexed', 
+                      { :column_name => 'non_indexed',
                         :value => [5].pack("N*"),
                         :comparison => ">"}
                     ]
