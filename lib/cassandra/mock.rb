@@ -200,6 +200,7 @@ class Cassandra
                                                                           READ_DEFAULTS.merge(:start_key  => nil,
                                                                                               :finish_key => nil,
                                                                                               :key_count  => 100,
+                                                                                              :batch_size => 100,
                                                                                               :columns    => nil,
                                                                                               :reversed   => false
                                                                                              )
@@ -390,7 +391,7 @@ class Cassandra
       start  = to_compare_with_type(start,  column_family)
       finish = to_compare_with_type(finish, column_family)
       cf(column_family).keys.sort.each do |key|
-        break if ret.keys.size >= key_count
+        break if ret.keys.size >= (key_count||100)
         if (start_key.nil? || start_key.empty? || key >= start_key) && (finish_key.nil? || finish_key.empty? || key <= finish_key)
           if columns
             #ret[key] = columns.inject(OrderedHash.new){|hash, column_name| hash[column_name] = cf(column_family)[key][column_name]; hash;}
