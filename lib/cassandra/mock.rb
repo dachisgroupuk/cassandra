@@ -101,6 +101,7 @@ class Cassandra
       if column
         row[column]
       else
+        options[:start], options[:finish] = options[:finish], options[:start] if options[:reversed]
         row = apply_range(row, column_family, options[:start], options[:finish])
         row = apply_count(row, options[:count], options[:reversed])
       end
@@ -390,6 +391,7 @@ class Cassandra
       ret = OrderedHash.new
       start  = to_compare_with_type(start,  column_family)
       finish = to_compare_with_type(finish, column_family)
+      start, finish = finish, start if reversed
       cf(column_family).keys.sort.each do |key|
         break if ret.keys.size >= (key_count||100)
         if (start_key.nil? || start_key.empty? || key >= start_key) && (finish_key.nil? || finish_key.empty? || key <= finish_key)
@@ -400,7 +402,6 @@ class Cassandra
             blk.call(key,ret[key]) unless blk.nil?
           else
             #ret[key] = apply_range(cf(column_family)[key], column_family, start, finish, !is_super(column_family))
-            start, finish = finish, start if reversed
             ret[key] = apply_range(columns_to_hash(column_family, cf(column_family)[key]), column_family, start, finish)
             ret[key] = apply_count(ret[key], count, reversed)
             blk.call(key,ret[key]) unless blk.nil?
